@@ -85,21 +85,17 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
             response_text = "Saya perlu API Key untuk berpikir."
         else:
             try:
-                # Setup AI Model dengan Logika Cadangan
+                # Setup AI Model
                 if "Google" in provider:
-                    try:
-                        # Coba pakai model Flash dulu (Cepat & Murah)
-                        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key)
-                        # Tes koneksi dummy
-                        llm.invoke("Test") 
-                    except:
-                        # Jika Flash error (404), otomatis pindah ke Gemini Pro (Stabil)
-                        print("Pindah ke model cadangan: gemini-pro")
-                        llm = ChatGoogleGenerativeAI(model="gemini-pro", google_api_key=api_key)
+                    # KITA GUNAKAN MODEL TERBARU DARI DAFTARMU
+                    llm = ChatGoogleGenerativeAI(
+                        model="gemini-2.0-flash",  # <--- Model Valid dari daftarmu
+                        google_api_key=api_key
+                    )
                 else:
                     llm = ChatOpenAI(model="gpt-4o", api_key=api_key)
 
-                # Prompt Engineering (SAMA SEPERTI SEBELUMNYA)
+                # Prompt Engineering (Tetap sama)
                 system_prompt = f"""
                 Kamu adalah asisten ahli hukum untuk pegawai Kementerian Keuangan.
                 Tugasmu: Menjawab pertanyaan user berdasarkan DATA yang diberikan di bawah.
@@ -125,8 +121,9 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
                     st.markdown(response_text)
             
             except Exception as e:
-                response_text = f"Maaf, masih ada kendala teknis. Coba refresh halaman atau cek API Key. Detail: {e}"
-                st.error(response_text)
+                # Tampilkan pesan error yang lebih detail jika masih gagal
+                st.error(f"Terjadi kesalahan: {e}")
+                st.info("Tips: Pastikan API Key benar dan kamu punya kuota gratis.")
 
     # 4. Simpan respon AI
     st.session_state.messages.append({"role": "assistant", "content": response_text})
@@ -142,4 +139,5 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
                 hide_index=True
 
             )
+
 
