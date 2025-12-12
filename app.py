@@ -78,25 +78,28 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
     else:
         context_text = "Tidak ditemukan peraturan yang pas dengan kata kunci tersebut di database."
 
-    # 3. Panggil AI
+# 3. Panggil AI
     with st.chat_message("assistant"):
         if not api_key:
             st.warning("Mohon masukkan API Key di menu sebelah kiri dulu ya.")
             response_text = "Saya perlu API Key untuk berpikir."
         else:
             try:
-                # Setup AI Model
+                # Setup AI Model dengan Logika Cadangan
                 if "Google" in provider:
-                    # KITA GANTI KE 'gemini-pro' AGAR LEBIH STABIL
-                    llm = ChatGoogleGenerativeAI(
-                        model="gemini-pro", 
-                        google_api_key=api_key,
-                        temperature=0 # Agar jawaban konsisten/tidak kreatif berlebih
-                    )
+                    try:
+                        # Coba pakai model Flash dulu (Cepat & Murah)
+                        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key)
+                        # Tes koneksi dummy
+                        llm.invoke("Test") 
+                    except:
+                        # Jika Flash error (404), otomatis pindah ke Gemini Pro (Stabil)
+                        print("Pindah ke model cadangan: gemini-pro")
+                        llm = ChatGoogleGenerativeAI(model="gemini-pro", google_api_key=api_key)
                 else:
                     llm = ChatOpenAI(model="gpt-4o", api_key=api_key)
 
-                # Prompt Engineering
+                # Prompt Engineering (SAMA SEPERTI SEBELUMNYA)
                 system_prompt = f"""
                 Kamu adalah asisten ahli hukum untuk pegawai Kementerian Keuangan.
                 Tugasmu: Menjawab pertanyaan user berdasarkan DATA yang diberikan di bawah.
@@ -122,7 +125,7 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
                     st.markdown(response_text)
             
             except Exception as e:
-                response_text = f"Maaf, ada error koneksi ke AI: {e}"
+                response_text = f"Maaf, masih ada kendala teknis. Coba refresh halaman atau cek API Key. Detail: {e}"
                 st.error(response_text)
 
     # 4. Simpan respon AI
@@ -139,3 +142,4 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
                 hide_index=True
 
             )
+
