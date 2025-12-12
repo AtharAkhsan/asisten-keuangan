@@ -167,37 +167,9 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
     if not search_results.empty:
         with st.expander("Lihat Tabel Referensi Asli"):
             st.dataframe(
-                search_results[['Nomor',
-    # 4. Simpan respon AI (Hanya simpan jika response_text ada isinya)
-    if response_text:
-        st.session_state.messages.append({"role": "assistant", "content": response_text})
-
-    # 5. Tampilkan Tabel Data (Opsional, biar ayahmu bisa klik langsung)
-    if not search_results.empty:
-        with st.expander("Lihat Tabel Referensi Asli"):
-            st.dataframe(
                 search_results[['Nomor', 'Tentang', 'Link']],
-                column_config={
-                    "Link": st.column_config.LinkColumn("Link Download")
-                },
+                column_config={"Link": st.column_config.LinkColumn("Link Download")},
                 hide_index=True
             )
-
-    # 4. Simpan respon AI
-    st.session_state.messages.append({"role": "assistant", "content": response_text})
-
-    # 5. Tampilkan Tabel Data (Opsional, biar ayahmu bisa klik langsung)
-    if not search_results.empty:
-        with st.expander("Lihat Tabel Referensi Asli"):
-            st.dataframe(
-                search_results[['Nomor', 'Tentang', 'Link']],
-                column_config={
-                    "Link": st.column_config.LinkColumn("Link Download")
-                },
-                hide_index=True
-
-            )
-
-
 
 
