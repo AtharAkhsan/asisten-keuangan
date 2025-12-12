@@ -78,56 +78,96 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
     else:
         context_text = "Tidak ditemukan peraturan yang pas dengan kata kunci tersebut di database."
 
-# 3. Panggil AI
-    response_text = "" # Siapkan variabel kosong dulu biar tidak NameError
+# 3. Panggil AI (SISTEM ROTASI MODEL / FALLBACK)
+    response_text = ""
     
+    # Daftar model urut dari yang tercanggih ke yang paling ringan
+    # Kita ambil dari list yang kamu berikan tadi
+    model_rotation = [
+        "gemini-2.0-flash",           # Prioritas 1: Paling baru & Cepat
+        "gemini-flash-latest",        # Prioritas 2: Versi 1.5 Stabil
+        "gemini-2.0-flash-lite-preview-02-05", # Prioritas 3: Versi Ringan
+        "gemini-pro-latest",          # Prioritas 4: Versi Pro
+        "gemini-2.0-flash-exp"        # Prioritas 5: Eksperimental
+    ]
+
     with st.chat_message("assistant"):
         if not api_key:
             st.warning("Mohon masukkan API Key di menu sebelah kiri dulu ya.")
             response_text = "Saya menunggu API Key darimu."
         else:
-            try:
-                # Setup AI Model
-                if "Google" in provider:
-                    # GANTI KE MODEL 'gemini-flash-latest' (Biasanya lebih aman kuotanya)
-                    llm = ChatGoogleGenerativeAI(
-                        model="gemini-2.5-flash", 
-                        google_api_key=api_key
-                    )
-                else:
-                    llm = ChatOpenAI(model="gpt-4o", api_key=api_key)
+            # Container untuk status loading
+            status_box = st.empty()
+            
+            # LOGIKA PERULANGAN (LOOP) UNTUK MENCOBA SATU PER SATU
+            success = False
+            last_error = ""
 
-                # Prompt Engineering
-                system_prompt = f"""
-                Kamu adalah asisten ahli hukum untuk pegawai Kementerian Keuangan.
-                Tugasmu: Menjawab pertanyaan user berdasarkan DATA yang diberikan di bawah.
-                
-                Aturan main:
-                1. Jawab dengan sopan dan formal bahasa Indonesia.
-                2. JIKA ada data peraturan yang relevan di bawah, SEBUTKAN Nomor, Judul, dan berikan LINK DOWNLOADNYA persis seperti di data.
-                3. Jangan mengarang link. Gunakan link yang disediakan di context.
-                4. Jika tidak ada di data, katakan jujur bahwa di database internal tidak ditemukan, tapi berikan saran umum.
+            for model_name in model_rotation:
+                try:
+                    status_box.markdown(f"🔄 *Mencoba berpikir menggunakan model: `{model_name}`...*")
+                    
+                    # 1. Setup Model saat ini
+                    if "Google" in provider:
+                        llm = ChatGoogleGenerativeAI(
+                            model=model_name, 
+                            google_api_key=api_key
+                        )
+                    else:
+                        # Jika OpenAI, hanya pakai 1 model (tidak dirotasi di kode ini)
+                        llm = ChatOpenAI(model="gpt-4o", api_key=api_key)
+                        success = True # Bypass loop logic for OpenAI
+                        
+                    # 2. Siapkan Prompt
+                    system_prompt = f"""
+                    Kamu adalah asisten ahli hukum Kementerian Keuangan.
+                    Tugas: Jawab pertanyaan berdasarkan DATA di bawah.
+                    
+                    Aturan:
+                    1. Jawab sopan & formal.
+                    2. WAJIB sertakan Nomor, Judul, dan LINK DOWNLOAD dari data.
+                    3. Jika tidak ada di data, katakan tidak ditemukan di database.
 
-                DATA DARI DATABASE:
-                {context_text}
-                """
-                
-                messages = [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=prompt)
-                ]
-                
-                with st.spinner("Menganalisa ribuan peraturan..."):
+                    DATA DATABASE:
+                    {context_text}
+                    """
+                    
+                    messages = [
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(content=prompt)
+                    ]
+                    
+                    # 3. Eksekusi
                     response = llm.invoke(messages)
                     response_text = response.content
+                    
+                    # Jika sampai sini tidak error, berarti SUKSES!
+                    success = True
+                    status_box.empty() # Hapus status loading
                     st.markdown(response_text)
+                    break # KELUAR DARI LOOP KARENA SUDAH BERHASIL
+                    
+                except Exception as e:
+                    # Jika gagal, catat errornya dan LANJUT ke model berikutnya
+                    error_code = str(e)
+                    print(f"Gagal pakai {model_name}: {error_code}")
+                    last_error = error_code
+                    continue # Coba model selanjutnya di list
             
-            except Exception as e:
-                # Jika error, kita tangkap pesannya tapi aplikasi TIDAK CRASH
-                error_msg = f"⚠️ Maaf, ada kendala koneksi ke AI.\n\n**Detail Error:** {str(e)}\n\n*Tips: Coba refresh halaman atau ganti API Key.*"
-                st.error(error_msg)
-                response_text = error_msg # Simpan pesan error sebagai jawaban
+            # Jika sudah mencoba SEMUA model dan masih gagal
+            if not success:
+                st.error(f"⚠️ Maaf, semua model AI sedang sibuk/habis kuota. Coba lagi 1 menit lagi.\nError terakhir: {last_error}")
+                response_text = "Gagal memproses permintaan."
 
+    # 4. Simpan respon AI ke History
+    if response_text and response_text != "Gagal memproses permintaan.":
+        st.session_state.messages.append({"role": "assistant", "content": response_text})
+
+    # 5. Tampilkan Tabel Data
+    if not search_results.empty:
+        with st.expander("Lihat Tabel Referensi Asli"):
+            st.dataframe(
+                search_results[['Nomor',
     # 4. Simpan respon AI (Hanya simpan jika response_text ada isinya)
     if response_text:
         st.session_state.messages.append({"role": "assistant", "content": response_text})
@@ -157,6 +197,7 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
                 hide_index=True
 
             )
+
 
 
 
