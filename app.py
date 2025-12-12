@@ -87,7 +87,12 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
             try:
                 # Setup AI Model
                 if "Google" in provider:
-                    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key)
+                    # KITA GANTI KE 'gemini-pro' AGAR LEBIH STABIL
+                    llm = ChatGoogleGenerativeAI(
+                        model="gemini-pro", 
+                        google_api_key=api_key,
+                        temperature=0 # Agar jawaban konsisten/tidak kreatif berlebih
+                    )
                 else:
                     llm = ChatOpenAI(model="gpt-4o", api_key=api_key)
 
@@ -132,4 +137,5 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
                     "Link": st.column_config.LinkColumn("Link Download")
                 },
                 hide_index=True
+
             )
