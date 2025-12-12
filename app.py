@@ -79,23 +79,25 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
         context_text = "Tidak ditemukan peraturan yang pas dengan kata kunci tersebut di database."
 
 # 3. Panggil AI
+    response_text = "" # Siapkan variabel kosong dulu biar tidak NameError
+    
     with st.chat_message("assistant"):
         if not api_key:
             st.warning("Mohon masukkan API Key di menu sebelah kiri dulu ya.")
-            response_text = "Saya perlu API Key untuk berpikir."
+            response_text = "Saya menunggu API Key darimu."
         else:
             try:
                 # Setup AI Model
                 if "Google" in provider:
-                    # KITA GUNAKAN MODEL TERBARU DARI DAFTARMU
+                    # GANTI KE MODEL 'gemini-flash-latest' (Biasanya lebih aman kuotanya)
                     llm = ChatGoogleGenerativeAI(
-                        model="gemini-2.0-flash",  # <--- Model Valid dari daftarmu
+                        model="gemini-2.5-flash", 
                         google_api_key=api_key
                     )
                 else:
                     llm = ChatOpenAI(model="gpt-4o", api_key=api_key)
 
-                # Prompt Engineering (Tetap sama)
+                # Prompt Engineering
                 system_prompt = f"""
                 Kamu adalah asisten ahli hukum untuk pegawai Kementerian Keuangan.
                 Tugasmu: Menjawab pertanyaan user berdasarkan DATA yang diberikan di bawah.
@@ -121,9 +123,25 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
                     st.markdown(response_text)
             
             except Exception as e:
-                # Tampilkan pesan error yang lebih detail jika masih gagal
-                st.error(f"Terjadi kesalahan: {e}")
-                st.info("Tips: Pastikan API Key benar dan kamu punya kuota gratis.")
+                # Jika error, kita tangkap pesannya tapi aplikasi TIDAK CRASH
+                error_msg = f"⚠️ Maaf, ada kendala koneksi ke AI.\n\n**Detail Error:** {str(e)}\n\n*Tips: Coba refresh halaman atau ganti API Key.*"
+                st.error(error_msg)
+                response_text = error_msg # Simpan pesan error sebagai jawaban
+
+    # 4. Simpan respon AI (Hanya simpan jika response_text ada isinya)
+    if response_text:
+        st.session_state.messages.append({"role": "assistant", "content": response_text})
+
+    # 5. Tampilkan Tabel Data (Opsional, biar ayahmu bisa klik langsung)
+    if not search_results.empty:
+        with st.expander("Lihat Tabel Referensi Asli"):
+            st.dataframe(
+                search_results[['Nomor', 'Tentang', 'Link']],
+                column_config={
+                    "Link": st.column_config.LinkColumn("Link Download")
+                },
+                hide_index=True
+            )
 
     # 4. Simpan respon AI
     st.session_state.messages.append({"role": "assistant", "content": response_text})
@@ -139,5 +157,6 @@ if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024
                 hide_index=True
 
             )
+
 
 
