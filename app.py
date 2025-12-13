@@ -3,7 +3,7 @@ import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
-from pypdf import PdfReader # Library baru untuk baca PDF
+from pypdf import PdfReader
 
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="Asisten Legal Kemenkeu", page_icon="⚖️", layout="wide")
@@ -23,23 +23,21 @@ with st.sidebar:
     # WIDGET UPLOAD FILE
     uploaded_file = st.file_uploader("Pilih file...", type=["pdf", "txt"])
     
-    # LOGIKA EKSTRAKSI TEKS FILE
     file_content = ""
     if uploaded_file is not None:
         try:
             with st.spinner("Membaca file..."):
                 if uploaded_file.type == "application/pdf":
-                    # Baca PDF
                     pdf_reader = PdfReader(uploaded_file)
                     for page in pdf_reader.pages:
-                        file_content += page.extract_text()
+                        text = page.extract_text()
+                        if text: file_content += text
                 elif uploaded_file.type == "text/plain":
-                    # Baca TXT
                     file_content = uploaded_file.read().decode("utf-8")
             
             st.success(f"File berhasil dibaca! ({len(file_content)} karakter)")
             with st.expander("Lihat isi file"):
-                st.text(file_content[:500] + "...") # Preview dikit
+                st.text(file_content[:500] + "...") 
         except Exception as e:
             st.error(f"Gagal membaca file: {e}")
 
@@ -74,6 +72,22 @@ def smart_search(query, df, top_k=15):
         results = df[mask_or]
     return results.head(top_k)
 
+# --- FUNGSI PEMBERSIH RESPON (FIX UTAMA) ---
+def clean_response(content):
+    """Mengubah format aneh [{'type': 'text'...}] menjadi string biasa."""
+    if isinstance(content, str):
+        return content
+    elif isinstance(content, list):
+        # Jika formatnya list of dict (multimodal response)
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict) and 'text' in item:
+                text_parts.append(item['text'])
+            elif isinstance(item, str):
+                text_parts.append(item)
+        return "".join(text_parts)
+    return str(content)
+
 # --- CHAT INTERFACE ---
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "assistant", "content": "Halo! Silakan upload dokumen atau tanya tentang aturan."}]
@@ -107,11 +121,10 @@ if prompt := st.chat_input("Contoh: 'Apakah dokumen yang saya upload sesuai deng
     file_context_prompt = ""
     if file_content:
         file_context_prompt = f"""
-        USER JUGA MENGUPLOAD SEBUAH DOKUMEN/SURAT. INI ISINYA:
+        USER MENGUPLOAD DOKUMEN BERIKUT:
         ---------------------------------------------------
         {file_content}
         ---------------------------------------------------
-        Tugas Tambahan: Gunakan isi dokumen di atas jika User bertanya tentang "dokumen ini" atau "file ini".
         """
 
     # --- PANGGIL AI ---
@@ -120,6 +133,7 @@ if prompt := st.chat_input("Contoh: 'Apakah dokumen yang saya upload sesuai deng
             st.warning("Masukkan API Key dulu.")
         else:
             status_box = st.empty()
+            # Urutan model (Flash V2 -> Flash Latest -> Pro)
             models = ["gemini-2.0-flash", "gemini-flash-latest", "gemini-pro"]
             
             success = False
@@ -127,38 +141,41 @@ if prompt := st.chat_input("Contoh: 'Apakah dokumen yang saya upload sesuai deng
                 try:
                     status_box.caption(f"🤖 Berpikir dengan: {model_name}...")
                     
-                    llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key)
+                    if "Google" in provider if 'provider' in locals() else True:
+                         llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key)
+                    else:
+                         llm = ChatOpenAI(model="gpt-4o", api_key=api_key)
                     
                     system_prompt = f"""
                     Kamu adalah Konsultan Hukum Kementerian Keuangan.
                     
-                    SUMBER DATA KAMU:
-                    1. Database Peraturan (Excel): 
-                    {db_context}
-                    
-                    2. Dokumen Upload User (Jika ada):
-                    {file_context_prompt}
+                    SUMBER DATA:
+                    1. Database Peraturan (Excel): {db_context}
+                    2. Dokumen Upload User: {file_context_prompt}
                     
                     INSTRUKSI:
-                    - Jawab pertanyaan user dengan mengaitkan Database Peraturan dan Dokumen Upload (jika ada).
-                    - Jika user minta analisis dokumen upload, cek apakah isinya bertentangan dengan aturan di database atau pengetahuan umum.
+                    - Jawab pertanyaan user dengan mengaitkan Database dan Dokumen (jika ada).
+                    - Jika user minta ringkasan file, ringkaslah.
                     - Tetap sopan dan profesional.
                     """
                     
                     messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
                     
                     response = llm.invoke(messages)
-                    response_text = response.content
+                    
+                    # --- BAGIAN PEMBERSIH YANG BARU ---
+                    response_text = clean_response(response.content)
                     
                     status_box.empty()
                     st.markdown(response_text)
                     success = True
                     break 
-                except Exception:
+                except Exception as e:
+                    # print(f"Error {model_name}: {e}") # Uncomment untuk debug di terminal
                     continue
             
             if not success:
-                st.error("Gagal koneksi ke AI.")
+                st.error("Gagal koneksi ke AI. Coba refresh.")
                 response_text = "Gagal memproses."
 
     if response_text and response_text != "Gagal memproses.":
