@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import json
+import os
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
@@ -11,6 +13,24 @@ st.set_page_config(page_title="Asisten Legal Kemenkeu", page_icon="⚖️", layo
 st.title("⚖️ Asisten Legal & Peraturan")
 st.markdown("Membantu pencarian peraturan keuangan & analisis dokumen.")
 
+# --- FILE PENYIMPANAN RIWAYAT ---
+HISTORY_FILE = "riwayat_chat.json"
+
+def load_chat_history():
+    """Membaca riwayat chat dari file JSON agar tidak hilang saat refresh."""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return [] # Jika file rusak, mulai kosong
+    return []
+
+def save_chat_history(messages):
+    """Menyimpan riwayat chat ke file JSON."""
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(messages, f)
+
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Pengaturan")
@@ -20,7 +40,6 @@ with st.sidebar:
     st.header("📂 Upload Dokumen")
     st.info("Upload surat/aturan (PDF/TXT) untuk dianalisa AI.")
     
-    # WIDGET UPLOAD FILE
     uploaded_file = st.file_uploader("Pilih file...", type=["pdf", "txt"])
     
     file_content = ""
@@ -40,6 +59,14 @@ with st.sidebar:
                 st.text(file_content[:500] + "...") 
         except Exception as e:
             st.error(f"Gagal membaca file: {e}")
+
+    st.divider()
+    # TOMBOL HAPUS RIWAYAT
+    if st.button("🗑️ Hapus Riwayat Chat", type="primary"):
+        if os.path.exists(HISTORY_FILE):
+            os.remove(HISTORY_FILE)
+        st.session_state.messages = []
+        st.rerun() # Refresh halaman otomatis
 
 # --- LOAD DATA ---
 @st.cache_data
@@ -72,13 +99,11 @@ def smart_search(query, df, top_k=15):
         results = df[mask_or]
     return results.head(top_k)
 
-# --- FUNGSI PEMBERSIH RESPON (FIX UTAMA) ---
+# --- FUNGSI PEMBERSIH RESPON ---
 def clean_response(content):
-    """Mengubah format aneh [{'type': 'text'...}] menjadi string biasa."""
     if isinstance(content, str):
         return content
     elif isinstance(content, list):
-        # Jika formatnya list of dict (multimodal response)
         text_parts = []
         for item in content:
             if isinstance(item, dict) and 'text' in item:
@@ -89,22 +114,33 @@ def clean_response(content):
     return str(content)
 
 # --- CHAT INTERFACE ---
-if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "Halo! Silakan upload dokumen atau tanya tentang aturan."}]
 
+# 1. Load History dari File saat pertama kali buka
+if "messages" not in st.session_state:
+    saved_history = load_chat_history()
+    if saved_history:
+        st.session_state.messages = saved_history
+    else:
+        st.session_state.messages = [{"role": "assistant", "content": "Halo! Riwayat chat tersimpan otomatis. Silakan tanya."}]
+
+# 2. Tampilkan Chat
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if prompt := st.chat_input("Contoh: 'Apakah dokumen yang saya upload sesuai dengan PMK ini?'"):
+# 3. Input User
+if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
+    
+    # Tambah ke session & SIMPAN KE FILE
     st.session_state.messages.append({"role": "user", "content": prompt})
+    save_chat_history(st.session_state.messages) # <--- SIMPAN DISINI
+    
     with st.chat_message("user"):
         st.markdown(prompt)
 
     # --- PERSIAPAN KONTEKS ---
     response_text = ""
     
-    # 1. Cari di Database Excel
     search_results = smart_search(prompt, df)
     found_in_db = not search_results.empty
     
@@ -117,15 +153,9 @@ if prompt := st.chat_input("Contoh: 'Apakah dokumen yang saya upload sesuai deng
     else:
         db_context = "TIDAK DITEMUKAN DI DATABASE EXCEL."
 
-    # 2. Siapkan Konteks File Upload
     file_context_prompt = ""
     if file_content:
-        file_context_prompt = f"""
-        USER MENGUPLOAD DOKUMEN BERIKUT:
-        ---------------------------------------------------
-        {file_content}
-        ---------------------------------------------------
-        """
+        file_context_prompt = f"USER MENGUPLOAD DOKUMEN: {file_content}"
 
     # --- PANGGIL AI ---
     with st.chat_message("assistant"):
@@ -133,7 +163,6 @@ if prompt := st.chat_input("Contoh: 'Apakah dokumen yang saya upload sesuai deng
             st.warning("Masukkan API Key dulu.")
         else:
             status_box = st.empty()
-            # Urutan model (Flash V2 -> Flash Latest -> Pro)
             models = ["gemini-2.0-flash", "gemini-flash-latest", "gemini-pro"]
             
             success = False
@@ -148,22 +177,13 @@ if prompt := st.chat_input("Contoh: 'Apakah dokumen yang saya upload sesuai deng
                     
                     system_prompt = f"""
                     Kamu adalah Konsultan Hukum Kementerian Keuangan.
-                    
-                    SUMBER DATA:
-                    1. Database Peraturan (Excel): {db_context}
-                    2. Dokumen Upload User: {file_context_prompt}
-                    
-                    INSTRUKSI:
-                    - Jawab pertanyaan user dengan mengaitkan Database dan Dokumen (jika ada).
-                    - Jika user minta ringkasan file, ringkaslah.
-                    - Tetap sopan dan profesional.
+                    SUMBER DATA: 1. Excel: {db_context}. 2. Upload: {file_context_prompt}
+                    INSTRUKSI: Jawab pertanyaan user, kaitkan dengan data jika ada.
                     """
                     
                     messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
                     
                     response = llm.invoke(messages)
-                    
-                    # --- BAGIAN PEMBERSIH YANG BARU ---
                     response_text = clean_response(response.content)
                     
                     status_box.empty()
@@ -171,15 +191,16 @@ if prompt := st.chat_input("Contoh: 'Apakah dokumen yang saya upload sesuai deng
                     success = True
                     break 
                 except Exception as e:
-                    # print(f"Error {model_name}: {e}") # Uncomment untuk debug di terminal
                     continue
             
             if not success:
-                st.error("Gagal koneksi ke AI. Coba refresh.")
+                st.error("Gagal koneksi ke AI.")
                 response_text = "Gagal memproses."
 
+    # Simpan Respon AI & UPDATE FILE
     if response_text and response_text != "Gagal memproses.":
         st.session_state.messages.append({"role": "assistant", "content": response_text})
+        save_chat_history(st.session_state.messages) # <--- SIMPAN LAGI DISINI
         
         if found_in_db:
             with st.expander("📚 Referensi Aturan Terkait"):
