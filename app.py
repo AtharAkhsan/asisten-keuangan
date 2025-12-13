@@ -5,31 +5,38 @@ from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="Asisten Legal Kemenkeu", page_icon="⚖️")
+st.set_page_config(page_title="Asisten Legal Kemenkeu", page_icon="⚖️", layout="wide")
 
-# --- JUDUL & INTRO ---
+# --- CUSTOM CSS AGAR LEBIH CANTIK ---
+st.markdown("""
+<style>
+    .stChatMessage {background-color: #f0f2f6; border-radius: 10px; padding: 10px;}
+    .stAlert {border-radius: 5px;}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("⚖️ Asisten Legal & Peraturan")
-st.markdown("Membantu pencarian peraturan keuangan dengan cepat.")
+st.markdown("Membantu pencarian peraturan keuangan dengan analisis AI.")
 
-# --- SIDEBAR (Untuk API Key) ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("Konfigurasi")
-    provider = st.selectbox("Pilih Otak AI", ["Google Gemini (Gratis/Berbayar)", "OpenAI (GPT-4)"])
-    
-    api_key = st.text_input("Masukkan API Key", type="password")
-    st.caption("Dapatkan Google AI Key di: aistudio.google.com (Gratis)")
+    st.header("⚙️ Pengaturan")
+    api_key = st.text_input("Masukkan Google API Key", type="password")
     
     st.divider()
-    st.info("Tips: Masukkan kata kunci seperti 'Perjalanan Dinas' atau nomor peraturan.")
+    st.markdown("**Tips Pencarian:**")
+    st.markdown("- Gunakan kata kunci spesifik (misal: *Perjalanan Dinas*, *Gaji 13*).")
+    st.markdown("- AI akan mencari di database Excel dulu.")
+    st.markdown("- Jika tidak ada, AI akan menggunakan pengetahuan umumnya.")
 
 # --- LOAD DATA ---
 @st.cache_data
 def load_data():
-    # Pastikan file ini ada (hasil dari Tahap 1)
     try:
         df = pd.read_csv("clean_legal_data.csv")
-        # Pastikan kolom Link tidak kosong (isi hash # jika kosong)
         df['Link'] = df['Link'].fillna('#')
+        # Gabungkan semua teks penting ke satu kolom untuk pencarian
+        df['Search_Text'] = df['Tentang'].astype(str) + " " + df['Nomor'].astype(str) + " " + df['Jenis'].astype(str)
         return df
     except FileNotFoundError:
         return pd.DataFrame()
@@ -37,139 +44,121 @@ def load_data():
 df = load_data()
 
 if df.empty:
-    st.error("File 'clean_legal_data.csv' belum ditemukan. Jalankan script extractor dulu.")
+    st.error("⚠️ File database tidak ditemukan. Jalankan script extractor dulu!")
     st.stop()
 
-# --- FUNGSI PENCARIAN ---
-def search_regulations(query, df, top_k=10):
-    # Pencarian keyword sederhana (case insensitive)
-    mask = df['Tentang'].str.contains(query, case=False, na=False) | \
-           df['Nomor'].str.contains(query, case=False, na=False)
-    results = df[mask].head(top_k)
-    return results
+# --- FUNGSI PENCARIAN PINTAR (SMART SEARCH) ---
+def smart_search(query, df, top_k=15):
+    # 1. Bersihkan query
+    keywords = query.lower().split()
+    
+    # 2. Filter Logika AND (Semua kata harus ada)
+    # Misal: "Uang Makan" -> Baris harus mengandung "uang" DAN "makan"
+    mask = pd.Series([True] * len(df))
+    for word in keywords:
+        mask = mask & df['Search_Text'].str.contains(word, case=False, na=False)
+    
+    results = df[mask]
+    
+    # 3. Fallback: Jika Logika AND kosong, pakai Logika OR (Salah satu kata ada)
+    if results.empty and len(keywords) > 1:
+        mask_or = pd.Series([False] * len(df))
+        for word in keywords:
+            mask_or = mask_or | df['Search_Text'].str.contains(word, case=False, na=False)
+        results = df[mask_or]
+        
+    return results.head(top_k)
 
 # --- INTERFACE CHAT ---
 if "messages" not in st.session_state:
-    st.session_state.messages = []
+    st.session_state.messages = [{"role": "assistant", "content": "Halo! Ada aturan apa yang ingin dicari hari ini? Saya siap membantu."}]
 
-# Tampilkan history chat
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Input Chat
-if prompt := st.chat_input("Tanya tentang aturan (Contoh: Aturan uang makan 2024)"):
-    
-    # 1. Simpan pesan user
+if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 2. Cari Data Relevan di CSV
-    search_results = search_regulations(prompt, df)
-    
-    # Format data untuk dibaca AI
-    context_text = ""
-    if not search_results.empty:
-        context_text = "Data Peraturan yang ditemukan:\n"
-        for index, row in search_results.iterrows():
-            link_str = f"(Link: {row['Link']})" if row['Link'] != '#' else "(Link tidak tersedia)"
-            context_text += f"- {row['Nomor']}: {row['Tentang']} {link_str}\n"
-    else:
-        context_text = "Tidak ditemukan peraturan yang pas dengan kata kunci tersebut di database."
-
-# 3. Panggil AI (SISTEM ROTASI MODEL / FALLBACK)
+    # --- PROSES PEMIKIRAN AI ---
     response_text = ""
     
-    # Daftar model urut dari yang tercanggih ke yang paling ringan
-    # Kita ambil dari list yang kamu berikan tadi
-    model_rotation = [
-        "gemini-2.0-flash",           # Prioritas 1: Paling baru & Cepat
-        "gemini-flash-latest",        # Prioritas 2: Versi 1.5 Stabil
-        "gemini-2.0-flash-lite-preview-02-05", # Prioritas 3: Versi Ringan
-        "gemini-pro-latest",          # Prioritas 4: Versi Pro
-        "gemini-2.0-flash-exp"        # Prioritas 5: Eksperimental
-    ]
+    # 1. Cari Data Dulu
+    search_results = smart_search(prompt, df)
+    found_in_db = not search_results.empty
+    
+    context_text = ""
+    if found_in_db:
+        context_text = "REFERENSI DARI DATABASE INTERNAL:\n"
+        for index, row in search_results.iterrows():
+            link_str = f"[Download]({row['Link']})" if row['Link'] != '#' else "(Link tidak tersedia)"
+            context_text += f"- {row['Nomor']} tentang {row['Tentang']} | Status: {row.get('Status_Text', '-')} | {link_str}\n"
+    else:
+        context_text = "TIDAK DITEMUKAN REFERENSI DI DATABASE EXCEL USER."
 
+    # 2. Panggil AI
     with st.chat_message("assistant"):
         if not api_key:
-            st.warning("Mohon masukkan API Key di menu sebelah kiri dulu ya.")
-            response_text = "Saya menunggu API Key darimu."
+            st.warning("Butuh API Key untuk menjawab.")
         else:
-            # Container untuk status loading
             status_box = st.empty()
             
-            # LOGIKA PERULANGAN (LOOP) UNTUK MENCOBA SATU PER SATU
+            # Daftar Model untuk Fallback
+            models = ["gemini-2.0-flash", "gemini-flash-latest", "gemini-pro"]
+            
             success = False
-            last_error = ""
-
-            for model_name in model_rotation:
+            for model_name in models:
                 try:
-                    status_box.markdown(f"🔄 *Mencoba berpikir menggunakan model: `{model_name}`...*")
+                    status_box.caption(f"🤖 Menggunakan otak: {model_name}...")
                     
-                    # 1. Setup Model saat ini
-                    if "Google" in provider:
-                        llm = ChatGoogleGenerativeAI(
-                            model=model_name, 
-                            google_api_key=api_key
-                        )
-                    else:
-                        # Jika OpenAI, hanya pakai 1 model (tidak dirotasi di kode ini)
-                        llm = ChatOpenAI(model="gpt-4o", api_key=api_key)
-                        success = True # Bypass loop logic for OpenAI
-                        
-                    # 2. Siapkan Prompt
+                    llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key)
+                    
+                    # --- PROMPT YANG LEBIH CERDAS ---
                     system_prompt = f"""
-                    Kamu adalah asisten ahli hukum Kementerian Keuangan.
-                    Tugas: Jawab pertanyaan berdasarkan DATA di bawah.
-                    
-                    Aturan:
-                    1. Jawab sopan & formal.
-                    2. WAJIB sertakan Nomor, Judul, dan LINK DOWNLOAD dari data.
-                    3. Jika tidak ada di data, katakan tidak ditemukan di database.
+                    Kamu adalah Konsultan Hukum Senior di Kementerian Keuangan.
+                    Tugasmu adalah menjawab pertanyaan user dengan komprehensif.
 
-                    DATA DATABASE:
+                    INSTRUKSI KHUSUS:
+                    1.  **Analisis Maksud:** Pahami apa yang sebenarnya dicari user (misal: "tukin" = tunjangan kinerja).
+                    2.  **Prioritas Database:** Gunakan data di bawah ("REFERENSI DARI DATABASE") sebagai sumber utama.
+                        - Jika ada aturan yang pas, jelaskan sedikit isinya dan berikan Link Downloadnya.
+                    3.  **Fallback Cerdas:** JIKA di database KOSONG atau kurang relevan:
+                        - Gunakan pengetahuan umum kamu tentang hukum Indonesia.
+                        - TAPI WAJIB berikan peringatan: "Data spesifik tidak ditemukan di database Excel, namun berdasarkan peraturan umum..."
+                    4.  **Gaya Bahasa:** Profesional, membantu, dan terstruktur. Jangan kaku.
+
+                    DATA PENDUKUNG:
                     {context_text}
                     """
                     
-                    messages = [
-                        SystemMessage(content=system_prompt),
-                        HumanMessage(content=prompt)
-                    ]
+                    messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
                     
-                    # 3. Eksekusi
                     response = llm.invoke(messages)
                     response_text = response.content
                     
-                    # Jika sampai sini tidak error, berarti SUKSES!
-                    success = True
-                    status_box.empty() # Hapus status loading
+                    status_box.empty()
                     st.markdown(response_text)
-                    break # KELUAR DARI LOOP KARENA SUDAH BERHASIL
+                    success = True
+                    break # Berhasil, keluar loop
                     
-                except Exception as e:
-                    # Jika gagal, catat errornya dan LANJUT ke model berikutnya
-                    error_code = str(e)
-                    print(f"Gagal pakai {model_name}: {error_code}")
-                    last_error = error_code
-                    continue # Coba model selanjutnya di list
+                except Exception:
+                    continue # Coba model lain
             
-            # Jika sudah mencoba SEMUA model dan masih gagal
             if not success:
-                st.error(f"⚠️ Maaf, semua model AI sedang sibuk/habis kuota. Coba lagi 1 menit lagi.\nError terakhir: {last_error}")
-                response_text = "Gagal memproses permintaan."
+                st.error("Maaf, AI sedang gangguan koneksi. Coba refresh.")
+                response_text = "Error koneksi."
 
-    # 4. Simpan respon AI ke History
-    if response_text and response_text != "Gagal memproses permintaan.":
+    if response_text and response_text != "Error koneksi.":
         st.session_state.messages.append({"role": "assistant", "content": response_text})
-
-    # 5. Tampilkan Tabel Data
-    if not search_results.empty:
-        with st.expander("Lihat Tabel Referensi Asli"):
-            st.dataframe(
-                search_results[['Nomor', 'Tentang', 'Link']],
-                column_config={"Link": st.column_config.LinkColumn("Link Download")},
-                hide_index=True
-            )
-
-
+        
+        # Tampilkan Tabel (Hanya jika ada data di DB)
+        if found_in_db:
+            with st.expander("📚 Lihat Daftar Dokumen Asli (Klik untuk Download)"):
+                st.dataframe(
+                    search_results[['Nomor', 'Tentang', 'Link']],
+                    column_config={"Link": st.column_config.LinkColumn("Link File")},
+                    hide_index=True,
+                    use_container_width=True
+                )
