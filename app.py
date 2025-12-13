@@ -1,28 +1,47 @@
 import streamlit as st
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
+from pypdf import PdfReader # Library baru untuk baca PDF
 
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="Asisten Legal Kemenkeu", page_icon="⚖️", layout="wide")
 
-# (KITA HAPUS BAGIAN CSS STYLE DI SINI AGAR TIDAK BENTROK WARNA)
-
 st.title("⚖️ Asisten Legal & Peraturan")
-st.markdown("Membantu pencarian peraturan keuangan dengan analisis AI.")
+st.markdown("Membantu pencarian peraturan keuangan & analisis dokumen.")
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Pengaturan")
-    # Input API Key
     api_key = st.text_input("Masukkan Google API Key", type="password")
     
     st.divider()
-    st.markdown("**Tips Pencarian:**")
-    st.markdown("- Gunakan kata kunci spesifik (misal: *Perjalanan Dinas*, *Gaji 13*).")
-    st.markdown("- AI akan mencari di database Excel dulu.")
-    st.markdown("- Jika tidak ada, AI akan menggunakan pengetahuan umumnya.")
+    st.header("📂 Upload Dokumen")
+    st.info("Upload surat/aturan (PDF/TXT) untuk dianalisa AI.")
+    
+    # WIDGET UPLOAD FILE
+    uploaded_file = st.file_uploader("Pilih file...", type=["pdf", "txt"])
+    
+    # LOGIKA EKSTRAKSI TEKS FILE
+    file_content = ""
+    if uploaded_file is not None:
+        try:
+            with st.spinner("Membaca file..."):
+                if uploaded_file.type == "application/pdf":
+                    # Baca PDF
+                    pdf_reader = PdfReader(uploaded_file)
+                    for page in pdf_reader.pages:
+                        file_content += page.extract_text()
+                elif uploaded_file.type == "text/plain":
+                    # Baca TXT
+                    file_content = uploaded_file.read().decode("utf-8")
+            
+            st.success(f"File berhasil dibaca! ({len(file_content)} karakter)")
+            with st.expander("Lihat isi file"):
+                st.text(file_content[:500] + "...") # Preview dikit
+        except Exception as e:
+            st.error(f"Gagal membaca file: {e}")
 
 # --- LOAD DATA ---
 @st.cache_data
@@ -30,7 +49,6 @@ def load_data():
     try:
         df = pd.read_csv("clean_legal_data.csv")
         df['Link'] = df['Link'].fillna('#')
-        # Gabungkan semua teks penting ke satu kolom untuk pencarian
         df['Search_Text'] = df['Tentang'].astype(str) + " " + df['Nomor'].astype(str) + " " + df['Jenis'].astype(str)
         return df
     except FileNotFoundError:
@@ -42,93 +60,89 @@ if df.empty:
     st.error("⚠️ File database tidak ditemukan. Jalankan script extractor dulu!")
     st.stop()
 
-# --- FUNGSI PENCARIAN PINTAR (SMART SEARCH) ---
+# --- FUNGSI SMART SEARCH ---
 def smart_search(query, df, top_k=15):
-    # 1. Bersihkan query
     keywords = query.lower().split()
-    
-    # 2. Filter Logika AND (Semua kata harus ada)
     mask = pd.Series([True] * len(df))
     for word in keywords:
         mask = mask & df['Search_Text'].str.contains(word, case=False, na=False)
-    
     results = df[mask]
-    
-    # 3. Fallback: Jika Logika AND kosong, pakai Logika OR
     if results.empty and len(keywords) > 1:
         mask_or = pd.Series([False] * len(df))
         for word in keywords:
             mask_or = mask_or | df['Search_Text'].str.contains(word, case=False, na=False)
         results = df[mask_or]
-        
     return results.head(top_k)
 
-# --- INTERFACE CHAT ---
+# --- CHAT INTERFACE ---
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "Halo! Ada aturan apa yang ingin dicari hari ini? Saya siap membantu."}]
+    st.session_state.messages = [{"role": "assistant", "content": "Halo! Silakan upload dokumen atau tanya tentang aturan."}]
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
-    # Simpan pesan user
+if prompt := st.chat_input("Contoh: 'Apakah dokumen yang saya upload sesuai dengan PMK ini?'"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # --- PROSES PEMIKIRAN AI ---
+    # --- PERSIAPAN KONTEKS ---
     response_text = ""
     
-    # 1. Cari Data Dulu
+    # 1. Cari di Database Excel
     search_results = smart_search(prompt, df)
     found_in_db = not search_results.empty
     
-    context_text = ""
+    db_context = ""
     if found_in_db:
-        context_text = "REFERENSI DARI DATABASE INTERNAL:\n"
+        db_context = "REFERENSI DARI DATABASE EXCEL:\n"
         for index, row in search_results.iterrows():
-            # Format link markdown
-            link_str = f"[Download]({row['Link']})" if row['Link'] != '#' else "(Link tidak tersedia)"
-            context_text += f"- {row['Nomor']} tentang {row['Tentang']} | Status: {row.get('Status_Text', '-')} | {link_str}\n"
+            link_str = f"[Download]({row['Link']})" if row['Link'] != '#' else ""
+            db_context += f"- {row['Nomor']} tentang {row['Tentang']} | Status: {row.get('Status_Text', '-')} {link_str}\n"
     else:
-        context_text = "TIDAK DITEMUKAN REFERENSI DI DATABASE EXCEL USER."
+        db_context = "TIDAK DITEMUKAN DI DATABASE EXCEL."
 
-    # 2. Panggil AI
+    # 2. Siapkan Konteks File Upload
+    file_context_prompt = ""
+    if file_content:
+        file_context_prompt = f"""
+        USER JUGA MENGUPLOAD SEBUAH DOKUMEN/SURAT. INI ISINYA:
+        ---------------------------------------------------
+        {file_content}
+        ---------------------------------------------------
+        Tugas Tambahan: Gunakan isi dokumen di atas jika User bertanya tentang "dokumen ini" atau "file ini".
+        """
+
+    # --- PANGGIL AI ---
     with st.chat_message("assistant"):
         if not api_key:
-            st.warning("Butuh API Key untuk menjawab.")
-            response_text = "Mohon masukkan API Key dulu."
+            st.warning("Masukkan API Key dulu.")
         else:
             status_box = st.empty()
-            
-            # Daftar Model untuk Fallback
             models = ["gemini-2.0-flash", "gemini-flash-latest", "gemini-pro"]
             
             success = False
             for model_name in models:
                 try:
-                    status_box.caption(f"🤖 Menggunakan otak: {model_name}...")
+                    status_box.caption(f"🤖 Berpikir dengan: {model_name}...")
                     
-                    if "Google" in provider if 'provider' in locals() else True: # Default Google
-                         llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key)
+                    llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key)
                     
-                    # --- PROMPT YANG LEBIH CERDAS ---
                     system_prompt = f"""
-                    Kamu adalah Konsultan Hukum Senior di Kementerian Keuangan.
-                    Tugasmu adalah menjawab pertanyaan user dengan komprehensif.
-
-                    INSTRUKSI KHUSUS:
-                    1.  **Analisis Maksud:** Pahami apa yang sebenarnya dicari user (misal: "tukin" = tunjangan kinerja).
-                    2.  **Prioritas Database:** Gunakan data di bawah ("REFERENSI DARI DATABASE") sebagai sumber utama.
-                        - Jika ada aturan yang pas, jelaskan sedikit isinya dan berikan Link Downloadnya.
-                    3.  **Fallback Cerdas:** JIKA di database KOSONG atau kurang relevan:
-                        - Gunakan pengetahuan umum kamu tentang hukum Indonesia.
-                        - TAPI WAJIB berikan peringatan: "Data spesifik tidak ditemukan di database Excel, namun berdasarkan peraturan umum..."
-                    4.  **Gaya Bahasa:** Profesional, membantu, dan terstruktur.
-
-                    DATA PENDUKUNG:
-                    {context_text}
+                    Kamu adalah Konsultan Hukum Kementerian Keuangan.
+                    
+                    SUMBER DATA KAMU:
+                    1. Database Peraturan (Excel): 
+                    {db_context}
+                    
+                    2. Dokumen Upload User (Jika ada):
+                    {file_context_prompt}
+                    
+                    INSTRUKSI:
+                    - Jawab pertanyaan user dengan mengaitkan Database Peraturan dan Dokumen Upload (jika ada).
+                    - Jika user minta analisis dokumen upload, cek apakah isinya bertentangan dengan aturan di database atau pengetahuan umum.
+                    - Tetap sopan dan profesional.
                     """
                     
                     messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
@@ -139,26 +153,22 @@ if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
                     status_box.empty()
                     st.markdown(response_text)
                     success = True
-                    break # Berhasil, keluar loop
-                    
-                except Exception as e:
-                    # Lanjut ke model berikutnya jika error
-                    continue 
+                    break 
+                except Exception:
+                    continue
             
             if not success:
-                st.error("Maaf, AI sedang gangguan koneksi atau kuota habis. Coba lagi nanti.")
-                response_text = "Gagal memproses permintaan."
+                st.error("Gagal koneksi ke AI.")
+                response_text = "Gagal memproses."
 
-    # Simpan respon (kecuali jika gagal total)
-    if response_text and response_text != "Gagal memproses permintaan.":
+    if response_text and response_text != "Gagal memproses.":
         st.session_state.messages.append({"role": "assistant", "content": response_text})
         
-        # Tampilkan Tabel (Hanya jika ada data di DB)
         if found_in_db:
-            with st.expander("📚 Lihat Daftar Dokumen Asli (Klik untuk Download)"):
+            with st.expander("📚 Referensi Aturan Terkait"):
                 st.dataframe(
                     search_results[['Nomor', 'Tentang', 'Link']],
-                    column_config={"Link": st.column_config.LinkColumn("Link File")},
+                    column_config={"Link": st.column_config.LinkColumn("Link")},
                     hide_index=True,
                     use_container_width=True
                 )
