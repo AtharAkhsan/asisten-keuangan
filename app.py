@@ -7,13 +7,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="Asisten Legal Kemenkeu", page_icon="⚖️", layout="wide")
 
-# --- CUSTOM CSS AGAR LEBIH CANTIK ---
-st.markdown("""
-<style>
-    .stChatMessage {background-color: #f0f2f6; border-radius: 10px; padding: 10px;}
-    .stAlert {border-radius: 5px;}
-</style>
-""", unsafe_allow_html=True)
+# (KITA HAPUS BAGIAN CSS STYLE DI SINI AGAR TIDAK BENTROK WARNA)
 
 st.title("⚖️ Asisten Legal & Peraturan")
 st.markdown("Membantu pencarian peraturan keuangan dengan analisis AI.")
@@ -21,6 +15,7 @@ st.markdown("Membantu pencarian peraturan keuangan dengan analisis AI.")
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Pengaturan")
+    # Input API Key
     api_key = st.text_input("Masukkan Google API Key", type="password")
     
     st.divider()
@@ -53,14 +48,13 @@ def smart_search(query, df, top_k=15):
     keywords = query.lower().split()
     
     # 2. Filter Logika AND (Semua kata harus ada)
-    # Misal: "Uang Makan" -> Baris harus mengandung "uang" DAN "makan"
     mask = pd.Series([True] * len(df))
     for word in keywords:
         mask = mask & df['Search_Text'].str.contains(word, case=False, na=False)
     
     results = df[mask]
     
-    # 3. Fallback: Jika Logika AND kosong, pakai Logika OR (Salah satu kata ada)
+    # 3. Fallback: Jika Logika AND kosong, pakai Logika OR
     if results.empty and len(keywords) > 1:
         mask_or = pd.Series([False] * len(df))
         for word in keywords:
@@ -78,6 +72,7 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
+    # Simpan pesan user
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -93,6 +88,7 @@ if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
     if found_in_db:
         context_text = "REFERENSI DARI DATABASE INTERNAL:\n"
         for index, row in search_results.iterrows():
+            # Format link markdown
             link_str = f"[Download]({row['Link']})" if row['Link'] != '#' else "(Link tidak tersedia)"
             context_text += f"- {row['Nomor']} tentang {row['Tentang']} | Status: {row.get('Status_Text', '-')} | {link_str}\n"
     else:
@@ -102,6 +98,7 @@ if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
     with st.chat_message("assistant"):
         if not api_key:
             st.warning("Butuh API Key untuk menjawab.")
+            response_text = "Mohon masukkan API Key dulu."
         else:
             status_box = st.empty()
             
@@ -113,7 +110,8 @@ if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
                 try:
                     status_box.caption(f"🤖 Menggunakan otak: {model_name}...")
                     
-                    llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key)
+                    if "Google" in provider if 'provider' in locals() else True: # Default Google
+                         llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key)
                     
                     # --- PROMPT YANG LEBIH CERDAS ---
                     system_prompt = f"""
@@ -127,7 +125,7 @@ if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
                     3.  **Fallback Cerdas:** JIKA di database KOSONG atau kurang relevan:
                         - Gunakan pengetahuan umum kamu tentang hukum Indonesia.
                         - TAPI WAJIB berikan peringatan: "Data spesifik tidak ditemukan di database Excel, namun berdasarkan peraturan umum..."
-                    4.  **Gaya Bahasa:** Profesional, membantu, dan terstruktur. Jangan kaku.
+                    4.  **Gaya Bahasa:** Profesional, membantu, dan terstruktur.
 
                     DATA PENDUKUNG:
                     {context_text}
@@ -143,14 +141,16 @@ if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
                     success = True
                     break # Berhasil, keluar loop
                     
-                except Exception:
-                    continue # Coba model lain
+                except Exception as e:
+                    # Lanjut ke model berikutnya jika error
+                    continue 
             
             if not success:
-                st.error("Maaf, AI sedang gangguan koneksi. Coba refresh.")
-                response_text = "Error koneksi."
+                st.error("Maaf, AI sedang gangguan koneksi atau kuota habis. Coba lagi nanti.")
+                response_text = "Gagal memproses permintaan."
 
-    if response_text and response_text != "Error koneksi.":
+    # Simpan respon (kecuali jika gagal total)
+    if response_text and response_text != "Gagal memproses permintaan.":
         st.session_state.messages.append({"role": "assistant", "content": response_text})
         
         # Tampilkan Tabel (Hanya jika ada data di DB)
