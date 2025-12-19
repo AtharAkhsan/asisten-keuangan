@@ -23,7 +23,7 @@ def load_chat_history():
             with open(HISTORY_FILE, "r") as f:
                 return json.load(f)
         except:
-            return [] # Jika file rusak, mulai kosong
+            return [] 
     return []
 
 def save_chat_history(messages):
@@ -61,12 +61,11 @@ with st.sidebar:
             st.error(f"Gagal membaca file: {e}")
 
     st.divider()
-    # TOMBOL HAPUS RIWAYAT
     if st.button("🗑️ Hapus Riwayat Chat", type="primary"):
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
         st.session_state.messages = []
-        st.rerun() # Refresh halaman otomatis
+        st.rerun()
 
 # --- LOAD DATA ---
 @st.cache_data
@@ -85,18 +84,28 @@ if df.empty:
     st.error("⚠️ File database tidak ditemukan. Jalankan script extractor dulu!")
     st.stop()
 
-# --- FUNGSI SMART SEARCH ---
+# --- FUNGSI SMART SEARCH (SUDAH DIPERBAIKI) ---
 def smart_search(query, df, top_k=15):
-    keywords = query.lower().split()
+    # Bersihkan query dari karakter aneh agar tidak error split
+    clean_query = query.replace("(", "").replace(")", "").replace("[", "").replace("]", "")
+    keywords = clean_query.lower().split()
+    
+    # Filter Logika AND
     mask = pd.Series([True] * len(df))
     for word in keywords:
-        mask = mask & df['Search_Text'].str.contains(word, case=False, na=False)
+        # FIX: Tambahkan regex=False agar simbol tidak dianggap kode
+        mask = mask & df['Search_Text'].str.contains(word, case=False, na=False, regex=False)
+    
     results = df[mask]
+    
+    # Fallback: Logika OR
     if results.empty and len(keywords) > 1:
         mask_or = pd.Series([False] * len(df))
         for word in keywords:
-            mask_or = mask_or | df['Search_Text'].str.contains(word, case=False, na=False)
+            # FIX: Tambahkan regex=False di sini juga
+            mask_or = mask_or | df['Search_Text'].str.contains(word, case=False, na=False, regex=False)
         results = df[mask_or]
+        
     return results.head(top_k)
 
 # --- FUNGSI PEMBERSIH RESPON ---
@@ -115,25 +124,21 @@ def clean_response(content):
 
 # --- CHAT INTERFACE ---
 
-# 1. Load History dari File saat pertama kali buka
 if "messages" not in st.session_state:
     saved_history = load_chat_history()
     if saved_history:
         st.session_state.messages = saved_history
     else:
-        st.session_state.messages = [{"role": "assistant", "content": "Halo! Riwayat chat tersimpan otomatis. Silakan tanya."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Halo! Saya siap membantu riset dan analisis peraturan."}]
 
-# 2. Tampilkan Chat
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# 3. Input User
 if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
     
-    # Tambah ke session & SIMPAN KE FILE
     st.session_state.messages.append({"role": "user", "content": prompt})
-    save_chat_history(st.session_state.messages) # <--- SIMPAN DISINI
+    save_chat_history(st.session_state.messages)
     
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -141,21 +146,22 @@ if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
     # --- PERSIAPAN KONTEKS ---
     response_text = ""
     
+    # Gunakan prompt yang asli untuk pencarian data
     search_results = smart_search(prompt, df)
     found_in_db = not search_results.empty
     
     db_context = ""
     if found_in_db:
-        db_context = "REFERENSI DARI DATABASE EXCEL:\n"
+        db_context = "REFERENSI DARI DATABASE EXCEL (Hanya yang relevan dengan kata kunci):\n"
         for index, row in search_results.iterrows():
             link_str = f"[Download]({row['Link']})" if row['Link'] != '#' else ""
             db_context += f"- {row['Nomor']} tentang {row['Tentang']} | Status: {row.get('Status_Text', '-')} {link_str}\n"
     else:
-        db_context = "TIDAK DITEMUKAN DI DATABASE EXCEL."
+        db_context = "TIDAK DITEMUKAN DATA SPESIFIK DI DATABASE EXCEL (Gunakan Pengetahuan Umum)."
 
     file_context_prompt = ""
     if file_content:
-        file_context_prompt = f"USER MENGUPLOAD DOKUMEN: {file_content}"
+        file_context_prompt = f"USER MENGUPLOAD DOKUMEN: {file_content[:15000]}..." # Batasi karakter agar tidak overload
 
     # --- PANGGIL AI ---
     with st.chat_message("assistant"):
@@ -176,9 +182,17 @@ if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
                          llm = ChatOpenAI(model="gpt-4o", api_key=api_key)
                     
                     system_prompt = f"""
-                    Kamu adalah Konsultan Hukum Kementerian Keuangan.
-                    SUMBER DATA: 1. Excel: {db_context}. 2. Upload: {file_context_prompt}
-                    INSTRUKSI: Jawab pertanyaan user, kaitkan dengan data jika ada.
+                    Kamu adalah Konsultan Ahli Strategi & Hukum Kemenkeu.
+                    
+                    SUMBER DATA: 
+                    1. Database Excel: {db_context}
+                    2. Upload User: {file_context_prompt}
+                    
+                    INSTRUKSI:
+                    1. Jawab pertanyaan user dengan SANGAT LENGKAP dan MENDALAM (seperti paper akademis).
+                    2. Jika pertanyaan menyangkut konsep baru (seperti Floating Port), gunakan PENGETAHUAN UMUM kamu untuk melakukan benchmarking dan analisis.
+                    3. Tetap cek apakah ada aturan di Database Excel yang mungkin berhubungan (misal: aturan Kawasan Pabean, Logistik, atau Investasi), jika ada, sebutkan.
+                    4. Struktur jawaban harus rapi (Poin-poin, Analisis, Kesimpulan).
                     """
                     
                     messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
@@ -191,16 +205,17 @@ if prompt := st.chat_input("Ketik pertanyaanmu di sini..."):
                     success = True
                     break 
                 except Exception as e:
+                    # Uncomment baris bawah ini jika ingin melihat error di terminal untuk debugging
+                    # print(f"Error {model_name}: {e}") 
                     continue
             
             if not success:
                 st.error("Gagal koneksi ke AI.")
                 response_text = "Gagal memproses."
 
-    # Simpan Respon AI & UPDATE FILE
     if response_text and response_text != "Gagal memproses.":
         st.session_state.messages.append({"role": "assistant", "content": response_text})
-        save_chat_history(st.session_state.messages) # <--- SIMPAN LAGI DISINI
+        save_chat_history(st.session_state.messages)
         
         if found_in_db:
             with st.expander("📚 Referensi Aturan Terkait"):
